@@ -61,7 +61,7 @@ id = c(1:N)              # no-clustering in this simulation
 I.N = diag(N)            # N-dim identity matrix
 
 # parallel computing
-use.par = TRUE   # TURE or FALSE
+use.par = FALSE   # TURE or FALSE
 
 # Declare variables for simulation results
 bt.OLS=matrix(NA,rep,2)     # OLS 
@@ -119,9 +119,9 @@ for (re in (1:rep)){
   # Use multi cores / single core (no parallel)
   if (use.par==T){
     n.core = detectCores()-1  
-    aveP=tsls_CSA_get_P(y, x.end, x.exo, z.excl=z, R=R, ld=NULL, sub.K=c(1:K.excl), use.par = T, n.core=n.core)
+    aveP=tsls_CSA_get_P(y, x.end, x.exo, z.excl=z, R=R, ld=NULL, sub.K=c(1:K), use.par = T, n.core=n.core)
   } else {
-    aveP=tsls_CSA_get_P(y, x.end, x.exo, z.excl=z, R=R, ld=NULL, sub.K=c(1:K.excl))
+    aveP=tsls_CSA_get_P(y, x.end, x.exo, z.excl=z, R=R, ld=NULL, sub.K=c(1:K))
   }
   
   #--------------------------------------
