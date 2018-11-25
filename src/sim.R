@@ -35,6 +35,7 @@ rm(list=ls())
 start.time = proc.time()[3]
 library(MASS)
 library(sandwich)
+library(doMC)
 
 seed='001'
 set.seed(as.numeric(seed))
@@ -59,6 +60,8 @@ R=1000
 id = c(1:N)              # no-clustering in this simulation
 I.N = diag(N)            # N-dim identity matrix
 
+# parallel computing
+use.par = TRUE   # TURE or FALSE
 
 # Declare variables for simulation results
 bt.OLS=matrix(NA,rep,2)     # OLS 
@@ -113,7 +116,13 @@ for (re in (1:rep)){
   #--------------------------------------
   # Calculate aveP matrix 
   #--------------------------------------
-  aveP=tsls_CSA_get_P(y, x.end, x.exo, z, R=R, ld=NULL, sub.K=c(1:K), use.par = T, n.core=12)
+  # Use multi cores / single core (no parallel)
+  if (use.par==T){
+    n.core = detectCores()-1  
+    aveP=tsls_CSA_get_P(y, x.end, x.exo, z.excl=z, R=R, ld=NULL, sub.K=c(1:K.excl), use.par = T, n.core=n.core)
+  } else {
+    aveP=tsls_CSA_get_P(y, x.end, x.exo, z.excl=z, R=R, ld=NULL, sub.K=c(1:K.excl))
+  }
   
   #--------------------------------------
   # OLS
