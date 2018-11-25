@@ -1,6 +1,6 @@
 # ls-csa
 
-This repository contains codes for the CRA-2SLS (Complete Subset Average 2SLS) estimator suggested in Lee and Shin (2018) 
+This repository contains codes for the CRA-2SLS (Complete Subset Average 2SLS) estimator in Lee and Shin (2018) 
 
 Last update: 2018-11-22
 
