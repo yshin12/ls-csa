@@ -7,8 +7,8 @@ Last update: 2018-11-22
 #### _src_ folder contains the following source files:
 * lib_csa: collection of all R-functions required for estimating the model 
 * sim-table2-flat.R: a sample simulation code; generate the first panel (pi_0=flat) of Table 2 in Section 5 of Lee and Shin (2018) 
-* BLP-original.R: empirical application; original design (left panel) in Table 5 in Section 6
-* BLP-extended.R: empirical application; extended design (right panel) in Table 5 in Section 6
+* BLP-original.R: empirical application; original design (left panel) of Table 5 in Section 6
+* BLP-extended.R: empirical application; extended design (right panel) of Table 5 in Section 6
 
 #### _results_ folder contains the results of all codes in the _src_ folder
 
