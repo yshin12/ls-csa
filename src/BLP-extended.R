@@ -20,7 +20,7 @@ set.seed(152732)
 # Folder and File names
 result.folder = "../result/"
 data.folder = "../data/"
-out.file.name = paste(result.folder, 'BLP-original.out', sep='')
+out.file.name = paste(result.folder, 'BLP-extended.out', sep='')
 
 # Import the BLP data set
 data(BLP)
@@ -28,14 +28,13 @@ dat = BLP$BLP
 attach(dat)
 
 # Design Selection
-design = 'small' # small: dim(x)=5, dim(z)=10, big: dim(x)=24, dim(z)=48
+design = 'big' # small: dim(x)=5, dim(z)=10, big: dim(x)=24, dim(z)=48
 
 # parallel computing
 use.par = TRUE   # TURE or FALSE
 
 # Number of random draws for the large complete subset
 R = 1000
-
 
 # Delcare Variables
 # X: included exogenous variable
@@ -80,6 +79,7 @@ if (use.par==T){
   aveP=tsls_CSA_get_P(y, x.end=price, x.exo=X, z.excl=Z.sort, R=R, ld=NULL, sub.K=c(1:K.excl))
 }
 
+  
 # OLS Estimation
 sink(out.file.name)
 cat('--------------------------------- \n')
@@ -166,9 +166,9 @@ table.main = cbind(ap.hat, robust.se, K.opt, No.Inelastic)
 row.names(table.main) = names.method
 
 sink(out.file.name, append=T)
-cat('\n \ n')
+cat('\n \n')
 cat('================== \n')
-cat('BLP-original-Table \n')
+cat('BLP-extended-Table \n')
 cat('================== \n')
 print(table.main)
 sink()

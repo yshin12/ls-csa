@@ -117,13 +117,14 @@ dgp_LS = function(N, K, rho.eu, rho.z, pi.0, bt.0){
   z = matrix(rnorm(N*K),N,K) %*% chol.z
   
   # Construct a vector of endogenous variables x
-  x = z %*% pi.0 + u
+  f = z %*% pi.0 
+  x = f + u
   
   # Construct a vector of dependent variable y
   y = x * bt.0 + e
   
   # Return a generated sample
-  return( list( y=y, x.end=x, z=z ,e=e, u=u, Sigma.z=Sigma.z) )
+  return( list( y=y, x.end=x, z=z ,e=e, u=u, Sigma.z=Sigma.z, f=f) )
 }
 
 
@@ -153,6 +154,13 @@ proj_m = function(z){
   #return(as.matrix(inv.z))
   (z %*% ( solve( t(z) %*% z ) ) %*% t(z))
 }
+
+proj2_m = function(z_in){
+  library('gpuR')
+  z = vclMatrix(z_in)
+  as.matrix((z %*% ( solve( t(z) %*% z ) ) %*% t(z)))
+}
+
 
 tr = function(X) {
   sum(diag(X))
@@ -214,12 +222,12 @@ tsls_est = function(y, x.end, x.exo, z) {
 
   # Combine z and x.exo if x.exo exists
   if ( !is.null(x.exo) ) {
-    z.big = cbind(z, x.exo)
+    z.big = cbind(x.exo,z)
   } else {
     z.big = z
   }
   x = cbind(x.end, x.exo)
-  
+
   # Construct a projection matrix with z.big
   p=proj_m(z.big)
   
@@ -274,17 +282,17 @@ mse = function ( ap.hat, ap.0 ) {
 
 # -----------------------------------------------------------
 # USAGE: 
-#     mad(ap.hat, ap.0)
+#     mad(ap.hat)
 #
 # PURPOSE:
-#     Calculate median abolute deviation between the estimator
-#     and its true value
+#     Calculate the median abolute deviation 
+#     
 #
 # INPUT:
 #     ap.hat: (R x d) matrix; the estimates in each replication
 #             where R is the number of replication
 #                   d is the size of estimator
-#     ap.0: (d x 1) vector; the true value of ap
+#
 #
 # OUPUT:
 #     mad: (d x 1) vector; median of asolute deviation distribution
@@ -292,23 +300,22 @@ mse = function ( ap.hat, ap.0 ) {
 # REVISION LOG:
 #     Date        Programmer          Description
 #     ====        ==========          ===========
-#    2/11/17      Y. shin             Original Code       
+#   2017-02-11    Y. shin             Original Code  
+#   2018-11-22 
 # -----------------------------------------------------------
-mad = function ( ap.hat, ap.0 ) {
+mad = function ( ap.hat ) {
   
   # Change it into a matrix just in case it is a numeric vector
   ap.hat = as.matrix(ap.hat)
   
-  # Error if the dimension does not match
-  try( if ( ncol(ap.hat) != length(ap.0) ) stop('ERROR : Dimesion does not match!'))
-  
   # Define constants
   R = nrow(ap.hat)   # The number of replications
   d = ncol(ap.hat)   # The number of parameters
+  med.ap.hat = apply(ap.hat,2,median)
   
   # Construct a (Rxd) matrix of true parameter values 
   ones = rep(1,R)               # (Rx1) vector of 1's
-  mat.ap.0 = t(ap.0) %x% ones   # (Rxd) matrix of true values 
+  mat.ap.0 = t(med.ap.hat) %x% ones   # (Rxd) matrix of true values 
   
   # Calculate the absolute values of the bias
   abs.bias=abs(ap.hat-mat.ap.0)
@@ -460,7 +467,7 @@ gen_p_triangle = function(K) {
 #
 # -----------------------------------------------------------
 
-tsls_CSA = function(y, x.end, x.exo, z.excl, method.pre, z.pre, R){
+tsls_CSA = function(y, x.end, x.exo, z.excl, method.pre, z.pre, R, ld=NULL){
   
   # Declare constants
   z = as.matrix(cbind(x.exo,z.excl))
@@ -485,112 +492,16 @@ tsls_CSA = function(y, x.end, x.exo, z.excl, method.pre, z.pre, R){
     P.all[ , , i] = P.m
   }
   
+  # Generate all projection matrices with averaging: list of K matrices whose dimensino is (N by N)
+  aveP = tsls_CSA_get_P(y=y, x.end=x.end, x.exo=x.exo, z.excl=z.excl, R=R, ld=ld, sub.K=c(1:K.excl))
   
-  # Generate P(N,N,K) array, all projection matrices with averaging
-  # Calculate u.hat.k
-  aveP = array(0,c(N,N,K.excl))
-  n_subset = gen_p_triangle(K.excl)[K.excl,]
-
-  if ( R == Inf ){
-    #
-    #
-    #   Correct the fortran code later 
-    #   we need to include z.excl and x.exo separately 
-    #
-    #
-    n_subset = gen_p_triangle(K.excl)[K.excl,]
-    dyn.load("gen_aveP.so")
-    gen_aveP = (.Fortran("gen_aveP", z=z, N=N, K=K.excl, aveP=aveP, n_subset=as.integer(n_subset)))
-    aveP = gen_aveP$aveP
-  } else {
-    for (i.aveP in c(1,K.excl-1)){
-      cat('No. of IVs =', i.aveP, '\n')
-      cat('No. of Subsets =', n_subset[i.aveP], '\n')
-      if (n_subset[i.aveP] <= R){
-        sum.sub = matrix(0, N, N)
-        subset_ind = combn(K.excl, i.aveP)
-	      for ( i.subset in c(1:n_subset[i.aveP]) ){
-          z.sub = z.excl[,subset_ind[,i.subset]]
-          proj.sub = proj_m(cbind(x.exo, z.sub))
-          sum.sub = sum.sub + proj.sub
-        }
-        aveP[ , , i.aveP] = sum.sub / n_subset[i.aveP]
-      } else {  # if the number of subset if bigger than R, then we conduct only R radom selections
-        cat('Random Selection', '\n')
-        sum.sub = matrix(0, N, N)
-        for (i.sub in (1:R)){
-          sub.rnd = sort(sample(1:K.excl, i.aveP, replace=F))
-          z.sub = z.excl[,sub.rnd]
-          proj.sub = proj_m(cbind(x.exo, z.sub))
-          sum.sub = sum.sub + proj.sub  
-        }
-        aveP[ , , i.aveP] = sum.sub / R
-      }
-    }
-  }
-
-
-    # Preliminary Regression to get sig2's
-    prelim = pre.est(method.pre='one.step', y, x.end, x.exo, z.pre=Z.pre.all, z, P.all, ld, d.2)
-    prelim = pre.est(method.pre='lasso', y, x.end, x.exo, z.pre=Z.pre.all, z, P.all, ld, d.2)
-    sig2.eps = prelim$sig2.eps
-    sig2.ld = prelim$sig2.ld
-    sig.ld.eps = prelim$sig.ld.eps
-    sig.u.eps = prelim$sig.u.eps
-    H.inv = prelim$H.inv
-    H.ld = H.inv %*% ld
-    u.pre = prelim$u.pre
-    f.pre = prelim$f.pre
-    P.f.pre = proj_m(f.pre)
-    
-    # Calculate S.hat.ld.k for k=1,..., K
-    S.hat.ld.k = array(0,K.excl-1)
-    bias.k = array(0,K.excl-1)
-    var.k = array(0,K.excl-1)
-    
-    
-    for ( j in c(1:(K.excl-1)) ) {
-    #for ( j in c(1:2) ) {
-      P.K = aveP[ , , j]
-      I.N = diag(N)
-      # In the paper
-      S.term.1 =  (t(x) %*% (I.N - P.K)%*% (I.N - P.K)  %*% x) / N - (t(u.pre) %*% (I.N - P.K) %*% (I.N - P.K) %*% u.pre ) / N
-      S.term.2 =  (t(x) %*% (I.N - P.K)  %*% x) / N - (t(u.pre) %*% (I.N - P.K) %*% u.pre) / N 
-      S.term.1.c =  ( (t(x) %*% (I.N - P.K)%*% (I.N - P.K)  %*% (x)) - (t(u.pre) %*% (I.N - P.K)%*% (I.N - P.K)  %*% (u.pre)) -2*t(f.pre)%*%(I.N - P.K)%*% (I.N - P.K) %*% u.pre) / N 
-      S.term.2.c =  ( t(x) %*% (I.N - P.K)  %*% (x) - t(u.pre) %*% (I.N - P.K)  %*% (u.pre) -2*t(f.pre) %*% (I.N - P.K)  %*% (u.pre)    ) / N 
-      # When we use all IVs. P.K becomes a projection matrix
-      #S.term.1.c =  ( (t(x) %*% (I.N - P.K)%*% (I.N - P.K)  %*% (x)) ) / N
-      #S.term.2.c =  ( t(x) %*% (I.N - P.K)  %*% (x) + t(u.pre) %*% (I.N - P.K) )/ N
-      mid.term =  t(f.pre) %*% (I.N - P.K)%*%(I.N - P.f.pre)%*%(I.N - P.K) %*% f.pre / N 
-      mid.term.2 = S.term.1 - S.term.2 %*% H.inv %*% S.term.2
-      mid.term.2.c = S.term.1.c - S.term.2.c %*% H.inv %*% S.term.2.c 
-      S.hat.ld.k[j] = sig.ld.eps^2 * j^2/N + sig2.eps * ( t(H.ld) %*%  mid.term %*% H.ld )
-      #S.hat.ld.k[j] = sig.ld.eps^2 * j^2/N + sig2.eps * ( t(H.ld) %*%  mid.term.2 %*% H.ld )
-      bias.k[j] = sig.ld.eps^2 * j^2/N
-      var.k[j] = sig2.eps * ( t(H.ld) %*%  mid.term.2 %*% H.ld )
-      cat('No of k = ', j, '\n')
-      cat('bias term = ', sig.ld.eps^2 * j^2/N, '\n')
-      cat('variance term (quad)      = ', sig2.eps * ( t(H.ld) %*%  mid.term %*% H.ld ), '\n')
-      cat('variance term (subt)      = ', sig2.eps * ( t(H.ld) %*%  mid.term.2 %*% H.ld ), '\n')
-      cat('variance term (subt.c)    = ', sig2.eps * ( t(H.ld) %*%  mid.term.2.c %*% H.ld ), '\n')
-      cat('Diff b/w two var est=', abs(sig2.eps * ( t(H.ld) %*%  mid.term.2 %*% H.ld ) - sig2.eps * ( t(H.ld) %*%  mid.term %*% H.ld )), '\n')
-    }
-    plot(S.hat.ld.k, type='l', col='green', ylim=c(0,1))
-    lines(bias.k, col='blue')
-    lines(var.k, col='red')
-    opt.k = which.min(S.hat.ld.k)
-    cat('opt.k =', opt.k, '\n')
+  # The CSA-2SLS estimator with aveP
+  m.csa = tsls_CSA_aveP_in(y, x.end, x.exo, z.excl, ld=ld, aveP, method.pre, z.pre)
   
-
-  bt.hat.LS =  solve( t(x) %*% aveP[ , , opt.k] %*% x ) %*% ( t(x) %*% aveP[ , , opt.k] %*%y )
-  
-  cat('bt.hat.LS = ',bt.hat.LS,'\n')
-  # cat('bt.hat.inf.LS = ',bt.hat.inf.LS,'\n')
-  
-  return(list(bt.hat=bt.hat.LS, opt.k=opt.k, obj.v=S.hat.ld.k,aveP=aveP))
+  return(list(bt.hat=m.csa$bt.hat, opt.k=m.csa$opt.k, obj.v=m.csa$obj.v, aveP=aveP))
 }
 
-tsls_CSA_get_P = function(y, x.end, x.exo, z.excl, R=Inf, ld=NULL, sub.K){
+tsls_CSA_get_P = function(y, x.end, x.exo, z.excl, R=Inf, ld=NULL, sub.K, use.par=FALSE, n.core=0){
   
   z = cbind(x.exo, z.excl)
   x = as.matrix(cbind(x.end, x.exo))
@@ -607,21 +518,16 @@ tsls_CSA_get_P = function(y, x.end, x.exo, z.excl, R=Inf, ld=NULL, sub.K){
   # Generate P(N,N,K) array, all projection matrices with averaging
   # Calculate u.hat.k
   K.excl = K - d.2
-  aveP = array(0,c(N,N,K.excl))
+  aveP = replicate(K.excl, matrix(0,N,N), simplify=F) 
   n_subset = gen_p_triangle(K.excl)[K.excl,]
   
-  if ( R == Inf ){
-    #
-    #
-    #   Correct the fortran code later 
-    #   we need to include z.excl and x.exo separately 
-    #
-    #
-    n_subset = gen_p_triangle(K.excl)[K.excl,]
-    dyn.load("gen_aveP.so")
-    gen_aveP = (.Fortran("gen_aveP", z=z, N=N, K=K.excl, aveP=aveP, n_subset=as.integer(n_subset)))
-    aveP = gen_aveP$aveP
-  } else {
+  if (use.par == TRUE){
+    library(doMC)
+    library(foreach)
+    registerDoMC(cores=n.core)
+    aveP.par<- (foreach(i.aveP = 1:K.excl) %dopar% loop.for.aveP(i.aveP, x.exo, z.excl, R, n_subset, K.excl))
+    return(aveP.par)
+  } else{
     for (i.aveP in sub.K){
       cat('No. of IVs =', i.aveP, '\n')
       cat('No. of Subsets =', n_subset[i.aveP], '\n')
@@ -633,7 +539,7 @@ tsls_CSA_get_P = function(y, x.end, x.exo, z.excl, R=Inf, ld=NULL, sub.K){
           proj.sub = proj_m(cbind(x.exo, z.sub))
           sum.sub = sum.sub + proj.sub
         }
-        aveP[ , , i.aveP] = sum.sub / n_subset[i.aveP]
+        aveP[[i.aveP]] = sum.sub / n_subset[i.aveP]
       } else {  # if the number of subset if bigger than R, then we conduct only R radom selections
         cat('Random Selection', '\n')
         sum.sub = matrix(0, N, N)
@@ -643,12 +549,45 @@ tsls_CSA_get_P = function(y, x.end, x.exo, z.excl, R=Inf, ld=NULL, sub.K){
           proj.sub = proj_m(cbind(x.exo, z.sub))
           sum.sub = sum.sub + proj.sub  
         }
-        aveP[ , , i.aveP] = sum.sub / R
+        aveP[[i.aveP]] = sum.sub / R
       }
     }
+    return(aveP)   
   }
-  return(list(sub.K=sub.K, aveP=aveP))
+  
+ 
 }
+
+
+loop.for.aveP = function(i.aveP, x.exo, z.excl, R, n_subset,  K.excl){
+  
+  N = nrow(as.matrix(z.excl))
+  
+  cat('No. of IVs =', i.aveP, '\n')
+  cat('No. of Subsets =', n_subset[i.aveP], '\n')
+  if (n_subset[i.aveP] <= R){
+    sum.sub = matrix(0, N, N)
+    subset_ind = combn(K.excl, i.aveP)
+    for ( i.subset in c(1:n_subset[i.aveP]) ){
+      z.sub = z.excl[,subset_ind[,i.subset]]
+      proj.sub = proj_m(cbind(x.exo, z.sub))
+      sum.sub = sum.sub + proj.sub
+    }
+    aveP.k = sum.sub / n_subset[i.aveP]
+  } else {  # if the number of subset if bigger than R, then we conduct only R radom selections
+    cat('Random Selection', '\n')
+    sum.sub = matrix(0, N, N)
+    for (i.sub in (1:R)){
+      sub.rnd = sort(sample(1:K.excl, i.aveP, replace=F))
+      z.sub = z.excl[,sub.rnd]
+      proj.sub = proj_m(cbind(x.exo, z.sub))
+      sum.sub = sum.sub + proj.sub  
+    }
+    aveP.k = sum.sub / R
+  }
+  return(aveP.k)
+}
+
 
 
 tsls_CSA_aveP_in = function(y, x.end, x.exo, z.excl, ld=NULL, aveP, method.pre, z.pre){
@@ -700,46 +639,27 @@ tsls_CSA_aveP_in = function(y, x.end, x.exo, z.excl, ld=NULL, aveP, method.pre, 
   bias.k = array(0,K.excl-1)
   var.k = array(0,K.excl-1)
   
-  
   for ( j in c(1:(K.excl-1)) ) {
-    #for ( j in c(1:2) ) {
-    P.K = aveP[ , , j]
+    P.K = aveP[[j]]
     I.N = diag(N)
-    # In the paper
-    S.term.1 =  (t(x) %*% (I.N - P.K)%*% (I.N - P.K)  %*% x) / N - (t(u.pre) %*% (I.N - P.K) %*% (I.N - P.K) %*% u.pre ) / N
-    S.term.2 =  (t(x) %*% (I.N - P.K)  %*% x) / N - (t(u.pre) %*% (I.N - P.K) %*% u.pre) / N 
-    S.term.1.c =  ( (t(x) %*% (I.N - P.K)%*% (I.N - P.K)  %*% (x)) - (t(u.pre) %*% (I.N - P.K)%*% (I.N - P.K)  %*% (u.pre)) -2*t(f.pre)%*%(I.N - P.K)%*% (I.N - P.K) %*% u.pre) / N 
-    S.term.2.c =  ( t(x) %*% (I.N - P.K)  %*% (x) - t(u.pre) %*% (I.N - P.K)  %*% (u.pre) -2*t(f.pre) %*% (I.N - P.K)  %*% (u.pre)    ) / N 
-    # When we use all IVs. P.K becomes a projection matrix
-    #S.term.1.c =  ( (t(x) %*% (I.N - P.K)%*% (I.N - P.K)  %*% (x)) ) / N
-    #S.term.2.c =  ( t(x) %*% (I.N - P.K)  %*% (x) + t(u.pre) %*% (I.N - P.K) )/ N
-    mid.term =  t(f.pre) %*% (I.N - P.K)%*%(I.N - P.f.pre)%*%(I.N - P.K) %*% f.pre / N 
-    mid.term.2 = S.term.1 - S.term.2 %*% H.inv %*% S.term.2
-    mid.term.2.c = S.term.1.c - S.term.2.c %*% H.inv %*% S.term.2.c 
-    S.hat.ld.k[j] = sig.ld.eps^2 * j^2/N + sig2.eps * ( t(H.ld) %*%  mid.term %*% H.ld )
-    #S.hat.ld.k[j] = sig.ld.eps^2 * j^2/N + sig2.eps * ( t(H.ld) %*%  mid.term.2 %*% H.ld )
     bias.k[j] = sig.ld.eps^2 * j^2/N
-    var.k[j] = sig2.eps * ( t(H.ld) %*%  mid.term.2 %*% H.ld )
-    cat('No of k = ', j, '\n')
-    cat('bias term = ', sig.ld.eps^2 * j^2/N, '\n')
-    cat('variance term (quad)      = ', sig2.eps * ( t(H.ld) %*%  mid.term %*% H.ld ), '\n')
-    cat('variance term (subt)      = ', sig2.eps * ( t(H.ld) %*%  mid.term.2 %*% H.ld ), '\n')
-    cat('variance term (subt.c)    = ', sig2.eps * ( t(H.ld) %*%  mid.term.2.c %*% H.ld ), '\n')
-    cat('Diff b/w two var est=', abs(sig2.eps * ( t(H.ld) %*%  mid.term.2 %*% H.ld ) - sig2.eps * ( t(H.ld) %*%  mid.term %*% H.ld )), '\n')
+    
+    #--- Calculate S.hat function
+    Sigma.u.tilde = (t(u.pre) %*% u.pre ) / N
+    S.term.1 =  (t(x) %*% (I.N - P.K)%*% (I.N - P.K)  %*% x) / N - Sigma.u.tilde * (-2*j/N + sum(diag(P.K%*%P.K))/N)
+    S.term.2 =  (t(x) %*% (I.N - P.K)  %*% x) / N + Sigma.u.tilde * ( (j/N) - 1 )
+    mid.term = S.term.1 - S.term.2 %*% H.inv %*% S.term.2
+    var.k[j] = sig2.eps * ( t(H.ld) %*%  mid.term %*% H.ld )
+    S.hat.ld.k[j] = bias.k[j] + var.k[j]
   }
-  plot(S.hat.ld.k, type='l', col='green', ylim=c(0,1))
-  lines(bias.k, col='blue')
-  lines(var.k, col='red')
   opt.k = which.min(S.hat.ld.k)
   cat('opt.k =', opt.k, '\n')
   
+  bt.hat.CSA =  solve( t(x) %*% aveP[[opt.k]] %*% x ) %*% ( t(x) %*% aveP[[opt.k]] %*%y )
   
-  bt.hat.LS =  solve( t(x) %*% aveP[ , , opt.k] %*% x ) %*% ( t(x) %*% aveP[ , , opt.k] %*%y )
-  
-  cat('bt.hat.LS = ',bt.hat.LS,'\n')
-  # cat('bt.hat.inf.LS = ',bt.hat.inf.LS,'\n')
-  
-  return(list(bt.hat=bt.hat.LS, opt.k=opt.k, obj.v=S.hat.ld.k,aveP=aveP))
+  cat('bt.hat.CSA = ',bt.hat.CSA,'\n')
+
+  return(list(bt.hat=bt.hat.CSA, opt.k=opt.k, obj.v=S.hat.ld.k, aveP=aveP))
 }
 
 
@@ -1312,12 +1232,13 @@ cluster.se = function(id, bt, x, y, P){
   eps.g.hat = list()
   
   G = length(table(id))
+  id.set = names(table(id))
   d = ncol(x)
   mid.sum.G = matrix(0,d,d)
   
-  for (i in (1:G)){
+  for (i in id.set){
     id.index[[i]] = which(id==i)
-    P.g[[i]] = P[id.index[[i]],]
+    P.g[[i]] = P[id.index[[i]], , drop=FALSE]
     eps.g.hat[[i]] = eps.hat[id.index[[i]]]
     mid.sum.G = mid.sum.G + t(x) %*% t(P.g[[i]]) %*% eps.g.hat[[i]] %*% t(eps.g.hat[[i]]) %*% P.g[[i]] %*% x
   }
@@ -1339,8 +1260,10 @@ pre.est=function(method.pre, y, x.end, x.exo, z.pre, z, P.all, ld, d.2){
   
   x = cbind(x.end, x.exo)
   d.x = ncol(as.matrix(x))
+  d.2 = ncol(as.matrix(x.exo))
   
   N = nrow(x)
+  K.excl = ncol(z) - d.2
   iv.pre = cbind(x.exo, z.pre)
   
   if (method.pre =='one.step'){
@@ -1409,7 +1332,9 @@ pre.est=function(method.pre, y, x.end, x.exo, z.pre, z, P.all, ld, d.2){
       pi.1st = coef(m.first.stage)[-2]
       selected = which(pi.1st!=0)
       cat('1st Stage Lasso Selection =', selected, '\n')
-      cat('No of selected z.excl     =', length(selected)-24, '\n')
+      cat('index for x.exo           =', (1:d.2), '\n')
+      cat('index for z.excl           =', ((d.2+1):(ncol(z))), '\n')
+      cat('No of selected z          =', length(selected), '\n')
       
       # Calculate eps, u, H
       z.sel = z[,selected]
@@ -1444,4 +1369,13 @@ pre.est=function(method.pre, y, x.end, x.exo, z.pre, z, P.all, ld, d.2){
 # Count the number of products that have inelastic demand
 inelastic = function(ap, price, share){
   sum(ap*(price)*(1-share) > -1)
+}
+
+coverage = function(ap, se, ap.0){
+  upper = ap + 1.96*se
+  lower = ap - 1.96*se
+  cover = (upper>ap.0) & (lower<ap.0)
+  #re=cbind(ap,se,upper,lower,cover)
+  #print(head(re))
+  mean(cover)
 }
